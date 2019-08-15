@@ -19,7 +19,7 @@ BUILD_DATE="$(date +%Y%m%d)"
 
 usage() {
 	cat <<EOF
-	Usage: gen-arch_n1.sh [options]
+	Usage: gen-arch-server_n1.sh [options]
 	Valid options are:
 		-g HTTP_PROXY_GENERIC   Generic HTTP proxy
 		                        (default is http://10.82.1.123:1080).
@@ -28,7 +28,7 @@ usage() {
 		-m ARCH_MIRROR          URI of the mirror to fetch packages from
 		                        (default is https://mirrors.tuna.tsinghua.edu.cn/archlinuxarm).
 		-o OUTPUT_IMG           Output img file
-		                        (default is BUILD_DATE-arch-n1-xfce4-mods.img).
+		                        (default is arch-server-n1-BUILD_DATE.img).
 		-h                      Show this help message and exit.
 EOF
 }
@@ -46,7 +46,7 @@ done
 : ${HTTP_PROXY_GENERIC:="http://10.82.1.123:1080"}
 : ${HTTP_PROXY_ARCH:="http://10.69.130.182:8080"}
 : ${ARCH_MIRROR:="https://mirrors.tuna.tsinghua.edu.cn/archlinuxarm"}
-: ${OUTPUT_IMG:="${BUILD_DATE}-arch-n1-xfce4-mods.img"}
+: ${OUTPUT_IMG:="arch-server-n1-${BUILD_DATE}.img"}
 
 #=======================  F u n c t i o n s  =======================#
 
@@ -192,13 +192,6 @@ install_bootloader() {
 	mkimage -A arm64 -O linux -T ramdisk -C gzip -n uInitrd -d /boot/initramfs-linux.img /boot/uInitrd
 }
 
-add_sudo_user() {
-	useradd -m -G wheel -s /bin/bash alarm
-	echo "alarm:alarm" | chpasswd
-	echo "alarm ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-	pacman --needed -S --noconfirm polkit
-}
-
 install_kernel() {
 	local url="https://github.com/yangxuan8282/phicomm-n1/releases/download/arch_kernel/linux-amlogic-4.19.2-0-aarch64.pkg.tar.xz"
 	curl -LO $url
@@ -210,38 +203,10 @@ enable_systemd_timesyncd() {
 	systemctl enable systemd-timesyncd.service
 }
 
-install_packer() {
-        su alarm sh -c 'cd /tmp && \
-        curl -LO https://github.com/archlinuxarm/PKGBUILDs/raw/a1ad4045699093b1cf4911b93cbf8830ee972639/aur/packer/PKGBUILD && \
-        makepkg -si --noconfirm'
-}
-
-aur_install_packages() {
-	su alarm <<-EOF
-	packer -S --noconfirm $@
-	EOF
-}
-
-install_roboto_mono() {
-	# the correct way to install Roboto Mono in 2019
-	pacman --needed -S --noconfirm curl unzip
-	curl -Lo /tmp/RobotoMono.zip https://fonts.google.com/download?family=Roboto%20Mono
-	unzip -od /usr/share/fonts/RobotoMono /tmp/RobotoMono.zip
-	rm -f /tmp/RobotoMono.zip
-}
-
 install_drivers() {
 	pacman --needed -S --noconfirm xf86-video-fbdev firmware-raspberrypi haveged
 	systemctl enable haveged
 	systemctl disable bluetooth.target
-}
-
-install_sddm() {
-	pacman --needed -S --noconfirm sddm
-	sddm --example-config > /etc/sddm.conf
-	sed -i "s/^User=/User=alarm/" /etc/sddm.conf
-	sed -i "s/^Session=/Session=xfce.desktop/" /etc/sddm.conf
-	systemctl enable sddm.service
 }
 
 install_network_manager() {
@@ -254,56 +219,13 @@ install_ssh_server() {
 	systemctl enable sshd
 }
 
-install_browser() {
-	pacman --needed -S --noconfirm chromium
-}
-
-install_xfce4() {
-	pacman --needed -S --noconfirm git xorg-server xorg-xrefresh xfce4 xfce4-goodies \
-					xarchiver gvfs gvfs-smb sshfs \
-					ttf-roboto arc-gtk-theme \
-					pavucontrol \
-					network-manager-applet gnome-keyring
-	systemctl disable dhcpcd
-	install_network_manager
-	install_sddm
-}
-
-install_xfce4_mods() {
-	install_xfce4
-	install_roboto_mono
-	pacman --needed -S --noconfirm curl
-	curl -LO https://github.com/yangxuan8282/PKGBUILDs/raw/master/pkgs/paper-icon-theme-1.5.0-2-any.pkg.tar.xz
-	pacman --needed -U --noconfirm paper-icon-theme-1.5.0-2-any.pkg.tar.xz && rm -f paper-icon-theme-1.5.0-2-any.pkg.tar.xz
-	mkdir -p /usr/share/wallpapers
-	curl https://img2.goodfon.com/original/2048x1820/3/b6/android-5-0-lollipop-material-5355.jpg \
-					--output /usr/share/wallpapers/android-5-0-lollipop-material-5355.jpg
-	su alarm sh -c 'mkdir -p /home/alarm/.config && \
-	curl -Lo- https://github.com/yangxuan8282/dotfiles/archive/master.tar.gz | \
-		tar -C /home/alarm/.config -xzf - --strip=2 dotfiles-master/config'
-}
-
-install_termite() {
-	pacman --needed -S --noconfirm termite
-	mkdir -p /home/alarm/.config/termite
-	cp /etc/xdg/termite/config /home/alarm/.config/termite/config
-	sed -i 's/font = Monospace 9/font = RobotoMono 11/g' /home/alarm/.config/termite/config
-	chown -R alarm:alarm /home/alarm/.config
-}
-
-install_docker() {
-	pacman --needed -S --noconfirm docker docker-compose
-	gpasswd -a alarm docker
-	systemctl enable docker
-}
-
 setup_miscs() {
 	ln -sf /usr/share/zoneinfo/Asia/Chongqing /etc/localtime
 	echo "en_US.UTF-8 UTF-8" | tee --append /etc/locale.gen
 	locale-gen
 	echo LANG=en_US.UTF-8 > /etc/locale.conf
-	echo alarm > /etc/hostname
-	echo "127.0.1.1    alarm.localdomain    alarm" | tee --append /etc/hosts
+	echo n1 > /etc/hostname
+	echo "127.0.1.1	n1.localdomain n1" | tee --append /etc/hosts
 }
 
 setup_chroot() {
@@ -325,13 +247,9 @@ setup_chroot() {
 		gen_resize2fs_once_service
 		export http_proxy=${HTTP_PROXY_ARCH}
 		export https_proxy=${HTTP_PROXY_ARCH}
-		install_docker
 		enable_systemd_timesyncd
 		install_drivers
 		install_ssh_server
-		install_termite
-		install_xfce4_mods
-		install_browser
 		install_bootloader
 EOF
 }
