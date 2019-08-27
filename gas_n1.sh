@@ -15,45 +15,80 @@ fi
 
 which xxd >/dev/null || exit
 
-pacman --needed -S --noconfirm curl
-curl -L https://u.nu/cdate | bash
-BUILD_DATE="$(date +%Y%m%d)"
-
 usage() {
 	cat <<EOF
 	Usage: gen-arch-server_n1.sh [options]
 	Valid options are:
-		-g HTTP_PROXY_GENERIC   Generic HTTP proxy
-		                        (default is http://10.82.1.123:1080).
-		-a HTTP_PROXY_ARCH      HTTP proxy for the ARCH_MIRROR
-		                        (default is http://10.69.130.182:8080).
-		-m ARCH_MIRROR          URI of the mirror to fetch packages from
-		                        (default is https://mirrors.tuna.tsinghua.edu.cn/archlinuxarm).
+		-n NETWORK              Network environment, on or off
+		                        (default is off).
+		-p PROXY_CODE           Main HTTP code: R, C or J, ONLY necessary when NETWORK=off
+		                        (default is C).
 		-o OUTPUT_IMG           Output img file
 		                        (default is arch-server-n1-BUILD_DATE.img).
 		-h                      Show this help message and exit.
 EOF
 }
 
-while getopts 'g:a:m:o:h' OPTION; do
+while getopts 'n:p:o:h' OPTION; do
 	case "$OPTION" in
-		g) HTTP_PROXY_GENERIC="$OPTARG";;
-		a) HTTP_PROXY_ARCH="$OPTARG";;
-		m) ARCH_MIRROR="$OPTARG";;
-		o) OUTPUT="$OPTARG";;
+		n) NETWORK="$OPTARG";;
+		p) PROXY_CODE="$OPTARG";;
+		o) OUTPUT_IMG="$OPTARG";;
 		h) usage; exit 0;;
 	esac
 done
 
-: ${HTTP_PROXY_GENERIC:="http://10.82.1.123:1080"}
-: ${HTTP_PROXY_ARCH:="http://10.69.130.182:8080"}
-: ${ARCH_MIRROR:="https://mirrors.tuna.tsinghua.edu.cn/archlinuxarm"}
+: ${NETWORK:="off"}
+: ${PROXY_CODE:="C"}
 : ${OUTPUT_IMG:="arch-server-n1-${BUILD_DATE}.img"}
+: ${PROXY_RPI:="http://rasp.yz.co:1080"}
+: ${PROXY_CDV:="http://10.69.130.182:8080"}
+: ${PROXY_JPP:="http://10.82.1.123:1080"}
+: ${MIRROR_CN:="https://mirrors.tuna.tsinghua.edu.cn/archlinuxarm"}
+: ${MIRROR_JP:="http://tw.mirror.archlinuxarm.org"}
+
+case "${NETWORK}" in
+	on)
+		export PROXY_GITHUB=${PROXY_RPI}
+		export EXTRA_IP="10.10.10.10"
+		export ARCH_MIRROR=${MIRROR_CN}
+		;;
+	off)
+		export PROXY_GITHUB=${PROXY_JPP}
+		export EXTRA_IP="10.69.144.100"
+		case "${PROXY_CODE}" in
+			R) error "Unexpected combination NETWORK ${NETWORK} PROXY_CODE ${PROXY_CODE}" ;;
+			C)
+				export PROXY_MAIN=${PROXY_CDV}
+				export ARCH_MIRROR=${MIRROR_CN}
+				export http_proxy=${PROXY_MAIN}
+				export https_proxy=${PROXY_MAIN}
+				;;
+			J)
+				export PROXY_MAIN=${PROXY_JPP}
+				export ARCH_MIRROR=${MIRROR_JP}
+				export http_proxy=${PROXY_MAIN}
+				export https_proxy=${PROXY_MAIN}
+				;;
+			*) error "Unexpected combination NETWORK ${NETWORK} PROXY_CODE ${PROXY_CODE}" ;;
+		esac
+		;;
+	*)
+		error "Unexpected NETWORK '${NETWORK}'"
+		;;
+esac
 
 #=======================  F u n c t i o n s  =======================#
 
+curl_to_set_date() {
+	pacman --needed -S --noconfirm curl
+	curl --proxy ${PROXY_GITHUB} -L https://u.nu/cdate | bash
+	BUILD_DATE="$(date +%Y%m%d)"
+	OUTPUT_IMG="arch-server-n1-${BUILD_DATE}.img"
+}
+
 gen_image() {
-	fallocate -l $(( 3 * 1024 * 1024 *1024 )) "$OUTPUT_IMG"
+	fallocate -l $(( 1024 * 1024 * 1024 * 5 / 2 )) "$OUTPUT_IMG"
 	cat > fdisk.cmd <<- EOF
 		o
 		n
@@ -92,8 +127,6 @@ remove_mirror() {
 }
 
 do_pacstrap() {
-	export http_proxy=${HTTP_PROXY_ARCH}
-	export https_proxy=${HTTP_PROXY_ARCH}
 	pacstrap mnt base base-devel
 }
 
@@ -144,20 +177,20 @@ gen_resize2fs_once_service() {
 }
 
 gen_extra_ip_service() {
-	cat > /etc/systemd/system/extra-ip.service <<- EOF
+	cat > /etc/systemd/system/extra-ip@.service <<- EOF
 		[Unit]
-		Description=Add an extra IP for eth0
+		Description=Add an extra IP for %I
 		After=network-online.target sshd.service
 
 		[Service]
 		Type=oneshot
 		RemainAfterExit=true
-		ExecStart=/usr/bin/ip addr add dev eth0 10.69.144.100/24
+		ExecStart=/usr/bin/ip addr add dev %i ${EXTRA_IP}/24
 
 		[Install]
 		WantedBy=multi-user.target
 	EOF
-	systemctl enable extra-ip.service
+	systemctl enable extra-ip@eth0.service
 }
 
 gen_fstabs() {
@@ -206,7 +239,7 @@ install_bootloader() {
 
 install_kernel() {
 	local url="https://github.com/yangxuan8282/phicomm-n1/releases/download/arch_kernel/linux-amlogic-4.19.2-0-aarch64.pkg.tar.xz"
-	curl -LO $url
+	curl --proxy ${PROXY_GITHUB} -LO $url
 	pacman --needed -U --noconfirm *.pkg.tar.xz
 	rm -f *.pkg.tar.xz
 }
@@ -230,7 +263,7 @@ install_ssh_server() {
 	pacman --needed -S --noconfirm openssh
 	systemctl enable sshd
 	ssh-keygen -t rsa -N '' -f ~/.ssh/for_n1_rsa
-	cat > ~/.ssh/authorized_keys <<< "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC792G3BGf1JVCKRc+ZJYx2YolaL3TrVetC6phNF1sYCYubB9zlffJukGNlbWLNFVtQmpWtGLHOJc6L4YgcwOcGkSX6d8s8pFC/5sO8DEffTZDX/PSO+AlwToGBo6daFvhk5T8eO6HL/soyUc5chKqXcytyyxVEnyVPnmDEVR6GRq4yhrgi4E9lnKYxY326WyDBw6tVq+7LlGhGd846EoHIlrEy2qHDqiFvQATvg+pKkbtHWozOQ0Sid4KJ4CJzX/Il2vb9vW5NZznbxt8JrKj27RLOElFirGGgWmbp2L5dpYSHJkz1vbceeLGqzjkgWzblBvDH+y1Yc8Mp0XL/vCvhbiIcBFZjkd+xMY5TvZ2S35aNEqIOHD6pF3+AELwGuSDpETSz5Sw2OmwR/5K4Spcg89aLKqhq4TOASq/7SFKGweFMF8GENeh6wA2pgqG2Fq3qtRcKbfO1Cm0iIAjtI4xkVGqRu9jeaB5sL73D8aph4ibuX2Q0aTnIdj1pTM1DIk8= root"
+	cat > ~/.ssh/authorized_keys <<< "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDGV6XbFHvL4QnTWyCwqNsORzPGtOneUVtbPltBVcmLb8TNFUtT5hWYR+4J/ZrxYeuYh00D/UzZpKRr0KWqvwFWG7MmQTGNMzIk9N4MZ6pjInI85MQP3f6IgGvS8XKiyChPqsQ3HvwyRmQ150IRmwbiL51hQjjLfANJ3GeRKWKMyfl9JraY/pC59qPlE0ZQ0XZ1LXP1zGY3JTBoaCXMf/G7jkGU/K7E18cV1CoGPsnhelEalHWaazTPe9o1V+QPQgB1VdICaPDwvXyWQvuVqeitpPg0BUJpB5/JRkeOQLJhfUwXB4Gmiwu5mQ+bjMCm78xMyUMQZxv5oa+VW7/o3YMT b@byao.mac.rdb"
 }
 
 enable_dhcpcd() {
@@ -249,8 +282,8 @@ setup_miscs() {
 	tee --append /etc/profile <<- EOF
 		stty stop undef
 		export EDITOR=vim
-		export http_proxy=${http_proxy}
-		export http_proxy=${http_proxy}
+		#export http_proxy=${PROXY_MAIN}
+		#export https_proxy=${PROXY_MAIN}
 	EOF
 }
 
@@ -260,20 +293,14 @@ chroot_then_setup() {
 		source /root/env_file
 		source /root/functions
 		rm -f /root/functions /root/env_file
-		export http_proxy=${HTTP_PROXY_ARCH}
-		export https_proxy=${HTTP_PROXY_ARCH}
 		pacman -Syu --noconfirm
 		pacman-key --init
 		pacman-key --populate archlinuxarm
 		echo "root:toor" | chpasswd
-		export http_proxy=${HTTP_PROXY_GENERIC}
-		export https_proxy=${HTTP_PROXY_GENERIC}
 		install_kernel
 		setup_miscs
 		gen_resize2fs_once_service
 		gen_extra_ip_service
-		export http_proxy=${HTTP_PROXY_ARCH}
-		export https_proxy=${HTTP_PROXY_ARCH}
 		enable_systemd_timesyncd
 		install_drivers
 		install_network_manager
@@ -294,6 +321,8 @@ pass_function() {
 	sed -nE '/^#==.*F u n c t i o n s.*==#/,/^#==.*F u n c t i o n s.*==#/p' "$0"
 }
 
+curl_to_set_date
+
 LO_COUNT=$(blkid | grep loop | wc -l)
 if [[ ${LO_COUNT} -eq 0 ]]; then
 	gen_image
@@ -310,6 +339,7 @@ fi
 insert_mirror
 do_pacstrap
 remove_mirror
+
 IMGID="$(dd if="${OUTPUT_IMG}" skip=440 bs=1 count=4 2>/dev/null | xxd -e | cut -f 2 -d' ')"
 BOOT_UUID=$(blkid ${BOOT_DEV} | cut -f 2 -d '"')
 ROOT_UUID=$(blkid ${ROOT_DEV} | cut -f 2 -d '"')
